@@ -1,50 +1,84 @@
-# Stage 1 — Build
-FROM node:20-slim AS builder
+# syntax=docker.io/docker/dockerfile:1
 
-# Avoid interactive prompts and speed up builds
-ENV DEBIAN_FRONTEND=noninteractive \
-  NODE_ENV=production \
-  NEXT_TELEMETRY_DISABLED=1
+###########################################################################
+# 🔹 Base image
+###########################################################################
+FROM node:20-alpine AS base
+
+# Fix common runtime deps
+RUN apk add --no-cache libc6-compat tini
 
 WORKDIR /app
 
-# Install core OS deps (no-cache)
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends ca-certificates git && \
-    rm -rf /var/lib/apt/lists/*
+ENV NODE_ENV=production
+ENV NEXT_TELEMETRY_DISABLED=1
+ENV PORT=3000
+ENV HOSTNAME="0.0.0.0"
 
-# Copy only what's needed to install dependencies (leverages caching)
-COPY package.json package-lock.json* pnpm-lock.yaml* yarn.lock* ./
-# You can use your preferred package manager
-RUN npm ci --omit=dev
+###########################################################################
+# 🔹 Dependencies
+###########################################################################
+FROM base AS deps
 
-# Copy rest of source
+# Copy package manifests
+COPY package.json yarn.lock* package-lock.json* pnpm-lock.yaml* .npmrc* ./
+
+# Install deps depending on lockfile and PM
+RUN \
+  if [ -f yarn.lock ]; then \
+      yarn --frozen-lockfile; \
+  elif [ -f package-lock.json ]; then \
+      npm ci; \
+  elif [ -f pnpm-lock.yaml ]; then \
+      corepack enable pnpm && pnpm i --frozen-lockfile; \
+  else \
+      echo "❌ No lockfile found." && exit 1; \
+  fi
+
+###########################################################################
+# 🔹 Build
+###########################################################################
+FROM base AS builder
+
+COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 
-# Make sure Next is built for production
-RUN npm run build
+# If you use "output: standalone" in next.config.js this makes the smallest bundle
+RUN \
+  if [ -f yarn.lock ]; then \
+      yarn run build; \
+  elif [ -f package-lock.json ]; then \
+      npm run build; \
+  elif [ -f pnpm-lock.yaml ]; then \
+      corepack enable pnpm && pnpm run build; \
+  else \
+      echo "❌ No lockfile found." && exit 1; \
+  fi
 
-# Stage 2 — Runtime
-FROM node:20-slim AS runner
+###########################################################################
+# 🔹 Runner
+###########################################################################
+FROM base AS runner
 
-# Lightweight runtime env
-ENV NODE_ENV=production \
-  NEXT_TELEMETRY_DISABLED=1
+# Security: dedicated user
+RUN addgroup --system --gid 1001 nodejs \
+  && adduser --system --uid 1001 nextjs
 
-WORKDIR /app
+USER nextjs
 
-# Copy only production files
-COPY --from=builder /app/.next ./.next
+# Bring in all necessary runtime parts
 COPY --from=builder /app/public ./public
-COPY --from=builder /app/package.json ./package.json
-COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
+COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
+COPY --from=builder --chown=nextjs:nodejs /app/package.json ./package.json
 
-# Install PM2 globally (process manager w/ clustering)
+# 👇 Install PM2 globally, very light on alpine
 RUN npm install -g pm2@5
 
-# Expose Next.js default port
 EXPOSE 3000
 
-# Start with PM2 in cluster mode using all CPU cores
-# You can limit with PM2_MAX_MEMORY_RESTART to auto-restart on memory pressure
-ENTRYPOINT [ "pm2-runtime", "npm", "--", "start", "--", "-p", "3000" ]
+# Optional: auto‑restart on memory pressure (>500MB), single‑instance fallback
+# PM2 spawns multiple workers on multi‑core CPUs (cluster mode)
+ENTRYPOINT ["/sbin/tini", "--"]
+
+CMD ["pm2-runtime", "--name", "next-app", "--max-memory-restart", "500M", "--no-autorestart", "--", "node", "server.js"]

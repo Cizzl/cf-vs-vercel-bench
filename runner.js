@@ -5,31 +5,37 @@ const tests = [
     name: "next-js",
     cfUrl: "https://next-cf-bench.pinglabs.workers.dev/bench",
     vercelUrl: "https://vercel-ssr-bench-v2-hidden.vercel.app/bench",
+    coolifyUrl: "https://next-bench.cizzl.de/bench",
   },
   {
     name: "react-ssr-bench",
     cfUrl: "https://react-ssr-cf.pinglabs.workers.dev/bench",
     vercelUrl: "https://react-ssr-bench-v2.vercel.app/api/bench",
+    // coolifyUrl: "https://react-ssr-bench.cizzl.de/bench"
   },
   {
     name: "sveltekit",
     cfUrl: "https://cf-sveltekit-bench.pinglabs.workers.dev/",
     vercelUrl: "https://vercel-svelte-bench.vercel.app",
+    // coolifyUrl: "https://sveltekit-bench.cizzl.de"
   },
   {
     name: "shitty-sine-bench",
     cfUrl: "https://vanilla-ssr-cf.pinglabs.workers.dev/shitty-sine-bench",
     vercelUrl: "https://vanilla-bench-v2.vercel.app/api/shitty-sine-bench",
+    // coolifyUrl: "https://sveltekit-bench.cizzl.de/api/shitty-sine-bench"
   },
   {
     name: "realistic-math-bench",
     cfUrl: "https://vanilla-ssr-cf.pinglabs.workers.dev/realistic-math-bench",
     vercelUrl: "https://vanilla-bench-v2.vercel.app/api/realistic-math-bench",
+    // coolifyUrl: "https://sveltekit-bench.cizzl.de/api/realistic-math-bench"
   },
   {
     name: "vanilla-slower",
     cfUrl: "https://vanilla-ssr-cf.pinglabs.workers.dev/slower-bench",
     vercelUrl: "https://vanilla-bench-v2.vercel.app/api/slower-bench",
+    // coolifyUrl: "https://sveltekit-bench.cizzl.de/api/slower-bench"
   },
 ];
 
@@ -149,24 +155,46 @@ function formatTime(ms) {
 
 async function main() {
   console.log("=".repeat(60));
-  console.log("  SSR Performance Benchmark: Cloudflare vs Vercel");
+  console.log("  SSR Performance Benchmark: Cloudflare vs Vercel vs Coolify");
   console.log("=".repeat(60));
+
+  // Load latest results
+  const resultsDir = path.resolve(__dirname, "results");
+  const files = fs
+    .readdirSync(resultsDir)
+    .filter((f) => f.startsWith("results-") && f.endsWith(".json"))
+    .sort()
+    .reverse();
+  if (files.length === 0) {
+    console.error("No previous results found!");
+    return;
+  }
+  const latestFile = path.join(resultsDir, files[0]);
+  const latestData = JSON.parse(fs.readFileSync(latestFile, "utf8"));
+  const loadedResults = {};
+  latestData.tests.forEach((test) => {
+    loadedResults[test.name] = test.results;
+  });
 
   const allResults = [];
 
   for (const test of tests) {
+    if (!test.coolifyUrl) continue; // Only run for tests with Coolify URL
+
     console.log("\n" + "-".repeat(60));
     console.log(`Test: ${test.name}`);
     console.log("-".repeat(60));
 
-    const cfResults = await runBenchmark(
-      test.cfUrl,
-      `${test.name} - Cloudflare`
-    );
-    const vercelResults = await runBenchmark(
-      test.vercelUrl,
-      `${test.name} - Vercel`
-    );
+    const cfResults = loadedResults[test.name]?.cloudflare;
+    const vercelResults = loadedResults[test.name]?.vercel;
+
+    let coolifyResults = null;
+    if (test.coolifyUrl) {
+      coolifyResults = await runBenchmark(
+        test.coolifyUrl,
+        `${test.name} - Coolify`
+      );
+    }
 
     console.log("=".repeat(60));
     console.log(`  RESULTS (${test.name})`);
@@ -208,6 +236,28 @@ async function main() {
       console.log(`  Mean: ${formatTime(vercelResults.mean)}`);
     }
 
+    if (coolifyResults) {
+      console.log("\n📊 Coolify Results:");
+      console.log(
+        `  Successful requests: ${coolifyResults.successful}/${ITERATIONS}`
+      );
+      if (coolifyResults.failed > 0) {
+        console.log(
+          `  Failed requests: ${coolifyResults.failed}/${ITERATIONS}`
+        );
+        console.log(
+          `  Failure rate: ${coolifyResults.failureRate.toFixed(2)}%`
+        );
+        console.log(`  Status codes:`, coolifyResults.statusCodes);
+        if (coolifyResults.errors) {
+          console.log(`  Errors:`, coolifyResults.errors);
+        }
+      }
+      console.log(`  Min:  ${formatTime(coolifyResults.min)}`);
+      console.log(`  Max:  ${formatTime(coolifyResults.max)}`);
+      console.log(`  Mean: ${formatTime(coolifyResults.mean)}`);
+    }
+
     if (cfResults && vercelResults) {
       console.log("\n📈 Comparison:");
       const ratio = cfResults.mean / vercelResults.mean;
@@ -224,10 +274,48 @@ async function main() {
       }
     }
 
+    if (cfResults && coolifyResults) {
+      console.log("\n📈 Comparison:");
+      const ratio = cfResults.mean / coolifyResults.mean;
+      if (ratio > 1) {
+        console.log(
+          `  Coolify is ${ratio.toFixed(2)}x faster than Cloudflare (by mean)`
+        );
+      } else {
+        console.log(
+          `  Cloudflare is ${(1 / ratio).toFixed(
+            2
+          )}x faster than Coolify (by mean)`
+        );
+      }
+    }
+
+    if (vercelResults && coolifyResults) {
+      console.log("\n📈 Comparison:");
+      const ratio = vercelResults.mean / coolifyResults.mean;
+      if (ratio > 1) {
+        console.log(
+          `  Coolify is ${ratio.toFixed(2)}x faster than Vercel (by mean)`
+        );
+      } else {
+        console.log(
+          `  Vercel is ${(1 / ratio).toFixed(2)}x faster than Coolify (by mean)`
+        );
+      }
+    }
+
     allResults.push({
       name: test.name,
-      urls: { cloudflare: test.cfUrl, vercel: test.vercelUrl },
-      results: { cloudflare: cfResults, vercel: vercelResults },
+      urls: {
+        cloudflare: test.cfUrl,
+        vercel: test.vercelUrl,
+        coolify: test.coolifyUrl || null,
+      },
+      results: {
+        cloudflare: cfResults,
+        vercel: vercelResults,
+        coolify: coolifyResults,
+      },
     });
   }
 
@@ -241,35 +329,64 @@ async function main() {
   for (const result of allResults) {
     const cf = result.results.cloudflare;
     const vercel = result.results.vercel;
+    const coolify = result.results.coolify;
 
     console.log(`## ${result.name}`);
     console.log();
 
-    if (cf && vercel) {
-      const ratio = vercel.mean / cf.mean;
-      const winner = ratio > 1 ? "Cloudflare" : "Vercel";
-      const speedup = ratio > 1 ? ratio : 1 / ratio;
+    const platforms = [];
+    if (cf)
+      platforms.push({
+        name: "Cloudflare",
+        mean: cf.mean,
+        min: cf.min,
+        max: cf.max,
+      });
+    if (vercel)
+      platforms.push({
+        name: "Vercel",
+        mean: vercel.mean,
+        min: vercel.min,
+        max: vercel.max,
+      });
+    if (coolify)
+      platforms.push({
+        name: "Coolify",
+        mean: coolify.mean,
+        min: coolify.min,
+        max: coolify.max,
+      });
 
-      const cfVariability = cf.max - cf.min;
-      const vercelVariability = vercel.max - vercel.min;
-
+    if (platforms.length >= 2) {
       console.log(`| Platform   | Mean | Min | Max | Variability |`);
       console.log(`|------------|------|-----|-----|-------------|`);
-      console.log(
-        `| Cloudflare | ${formatTime(cf.mean)} | ${formatTime(cf.min)} | ${formatTime(cf.max)} | ${formatTime(cfVariability)} |`
-      );
-      console.log(
-        `| Vercel     | ${formatTime(vercel.mean)} | ${formatTime(vercel.min)} | ${formatTime(vercel.max)} | ${formatTime(vercelVariability)} |`
-      );
+      platforms.forEach((p) => {
+        const variability = p.max - p.min;
+        console.log(
+          `| ${p.name.padEnd(10)} | ${formatTime(p.mean)} | ${formatTime(
+            p.min
+          )} | ${formatTime(p.max)} | ${formatTime(variability)} |`
+        );
+      });
       console.log();
-      console.log(`**Winner:** ${winner} (${speedup.toFixed(2)}x faster)`);
+      platforms.sort((a, b) => a.mean - b.mean);
+      const winner = platforms[0];
+      const slowest = platforms[platforms.length - 1];
+      const speedup = slowest.mean / winner.mean;
+      console.log(
+        `**Winner:** ${winner.name} (${speedup.toFixed(2)}x faster than ${
+          slowest.name
+        })`
+      );
       console.log();
     }
   }
 
   console.log("---");
   console.log(
-    `\n*Benchmark run: ${new Date().toISOString().split("T")[0]} • ${ITERATIONS} iterations • Concurrency: ${CONCURRENCY}*`
+    `\n*Benchmark run: ${
+      new Date().toISOString().split("T")[0]
+    } • ${ITERATIONS} iterations • Concurrency: ${CONCURRENCY}*`
   );
   console.log("\n" + "=".repeat(60) + "\n");
 
@@ -282,11 +399,30 @@ async function main() {
     const safeStamp = timestamp.replace(/[:.]/g, "-");
     const filePath = path.join(resultsDir, `results-${safeStamp}.json`);
 
+    // Merge with loaded results
+    const mergedTests = latestData.tests.map((loadedTest) => {
+      const updated = allResults.find((r) => r.name === loadedTest.name);
+      if (updated) {
+        return {
+          ...loadedTest,
+          results: {
+            ...loadedTest.results,
+            coolify: updated.results.coolify,
+          },
+          urls: {
+            ...loadedTest.urls,
+            coolify: updated.urls.coolify,
+          },
+        };
+      }
+      return loadedTest;
+    });
+
     const summary = {
       timestamp,
       iterations: ITERATIONS,
       concurrency: CONCURRENCY,
-      tests: allResults,
+      tests: mergedTests,
     };
 
     await fs.promises.writeFile(

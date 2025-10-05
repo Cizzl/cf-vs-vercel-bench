@@ -73,7 +73,7 @@ COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 COPY --from=builder --chown=nextjs:nodejs /app/package.json ./package.json
 
 # 👇 Install PM2 globally, very light on alpine
-RUN pnpm install -g pm2@5
+RUN npm install -g --unsafe-perm pm2@5
 
 EXPOSE 3000
 
